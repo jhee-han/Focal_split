@@ -9,23 +9,22 @@ def load_images_from_pkl(pkl_path):
         data = pickle.load(f)
     return data[0], data[1]
 
-#2 Change to grayscale images
-def convert_to_grayscale(image):
-    image1, image2 = load_images_from_pkl(image)
-    gray1 = cv2.cvtColor(image1, cv2.COLOR_RGB2GRAY)
-    gray2 = cv2.cvtColor(image2, cv2.COLOR_RGB2GRAY)
-    return gray1, gray2
+#2 Change to green images
+def convert_to_green(image1, image2):
+    green1 = image1[:, :, 1]
+    green2 = image2[:, :, 1]
+    return green1, green2
 
 #3 Aberration correction; apply averaging box filter
-def aberration_correction(gray_image, kernel_size=21):
-    if gray_image.dtype == np.uint8:
-        gray_image = gray_image.astype(np.float32) / 255.0
+def aberration_correction(green_image, kernel_size=21):
+    if green_image.dtype == np.uint8:
+        green_image = green_image.astype(np.float32) / 255.0
     else:
-        gray_image = gray_image.astype(np.float32)
+        green_image = green_image.astype(np.float32)
 
     kernel = np.ones((kernel_size, kernel_size), np.float32) / (kernel_size ** 2) #1/21*21
-    convolutioned_img = cv2.filter2D(gray_image, -1, kernel)
-    filtered_out_background = gray_image - convolutioned_img
+    convolutioned_img = cv2.filter2D(green_image, -1, kernel)
+    filtered_out_background = green_image - convolutioned_img
     return filtered_out_background
 
 #4 Noise attenuation; apply Gaussian filter
@@ -33,16 +32,21 @@ def noise_attenuation(filtered_image):
     smoothed_image = cv2.GaussianBlur(filtered_image, (11, 11),0)
     return smoothed_image
 
-# Sift needs images to be in the range [0, 255] and of type uint8. This function normalizes the input images to meet these requirements.
+# SIFT nees uint8 images, so we need to convert float images to uint8
 def prepare_sift_images(image1, image2):
-    scale = np.percentile(
-    np.abs(np.concatenate((image1.ravel(), image2.ravel()))),
-    99,
-    )
-    scale = max(float(scale), 1e-8)
+    image1 = to_float01(image1)
+    image2 = to_float01(image2)
 
-    sift_image1 = np.clip(127.5 + image1 * (127.5 / scale), 0, 255).astype(np.uint8)
-    sift_image2 = np.clip(127.5 + image2 * (127.5 / scale), 0, 255).astype(np.uint8)
+    # RGB 입력이면 특징점 추출용 grayscale로 변환
+    if image1.ndim == 3:
+        image1 = cv2.cvtColor(image1, cv2.COLOR_RGB2GRAY)
+
+    if image2.ndim == 3:
+        image2 = cv2.cvtColor(image2, cv2.COLOR_RGB2GRAY)
+
+    sift_image1 = np.clip(image1 * 255, 0, 255).astype(np.uint8)
+    sift_image2 = np.clip(image2 * 255, 0, 255).astype(np.uint8)
+
     return sift_image1, sift_image2
 
 #5 SIFT feature extraction; apply SIFT algorithm
@@ -75,54 +79,40 @@ def warp_image(image, Homography):
     return warped_image
 
 #8 Two images derivates
-def compute_derivatives(warped_image, image2):
-    I_s_approx = warped_image - image2
+def compute_derivatives(warped_image, image1):
+    I_s_approx = 0.5 * (image1 - warped_image)
 
-    image_mean = 0.5 * (warped_image + image2)
+    image_mean = 0.5 * (warped_image + image1)
 
-    laplacian_I_approx = cv2.Laplacian(
-        image_mean,
-        cv2.CV_32F,
-        ksize=1,
-    )    
+    # # first version of laplacian_I_approx
+    # laplacian_I_approx = cv2.Laplacian(
+    #     image_mean,
+    #     cv2.CV_32F,
+    #     ksize=1,
+    # )
+    # second version of laplacian_I_approx
+    laplacian_I_approx = image_mean - cv2.GaussianBlur(image_mean, (11, 11), 0)
+
     return I_s_approx, laplacian_I_approx
 
 #9 Depth estimation
 def depth_estimation(
-    I_s_approx,
-    laplacian_I_approx,
-    a,
-    b,
+    S,
+    L,
+    A=1.23,
+    B=0.19,
     patch_size=21,
-    confidence_threshold=0,#4e-5
 ):
-    S = I_s_approx.astype(np.float32)
-    D = laplacian_I_approx.astype(np.float32)
-    term = b * D + S
+    S = np.asarray(S, dtype=np.float32)
+    L = np.asarray(L, dtype=np.float32)
 
-    numerator = cv2.boxFilter(
-        D * term,
-        cv2.CV_32F,
-        (patch_size, patch_size),
-        normalize=True,
-    )
-    denominator = cv2.boxFilter(
-        term * term,
-        cv2.CV_32F,
-        (patch_size, patch_size),
-        normalize=True,
-    )
+    V = L
+    W = A *L + B * S
 
-    depth = np.full_like(numerator, np.nan)
-    confidence = S * S
-    valid = (
-        np.isfinite(S)
-        & np.isfinite(D)
-        & np.isfinite(denominator)
-        & (denominator > 1e-12)
-        & (confidence >= confidence_threshold)
-    )
-    depth[valid] = a * numerator[valid] / denominator[valid]
+    VW = cv2.boxFilter(V * W, -1, (patch_size, patch_size), normalize=False)
+    WW = cv2.boxFilter(W * W, -1, (patch_size, patch_size), normalize=False)
+
+    depth = VW/WW
     return depth
 
 # Display two images
@@ -157,9 +147,10 @@ def display_depth(depth):
     if valid_depth.size == 0:
         raise ValueError("Depth map contains no finite values to display")
 
-    min_depth, max_depth = np.percentile(valid_depth, [2, 98])
-    if min_depth == max_depth:
-        max_depth = min_depth + 1e-8
+    # min_depth, max_depth = np.percentile(valid_depth, [2, 98])
+    # if min_depth == max_depth:
+    #     max_depth = min_depth + 1e-8
+    min_depth, max_depth = 0.4, 1.0
 
     depth_image = np.ma.masked_invalid(depth)
     figure, axis = plt.subplots(figsize=(8, 6))
@@ -175,177 +166,225 @@ def display_depth(depth):
     plt.tight_layout()
     plt.show()
 
-def display_confidence(I_s_approx):
-    confidence = np.asarray(I_s_approx, dtype=np.float32) ** 2
-    finite_confidence = confidence[np.isfinite(confidence)]
 
-    if finite_confidence.size == 0:
-        raise ValueError("Confidence map contains no finite values to display")
+def to_float01(image):
+    image = np.asarray(image)
 
-    vmin, vmax = np.percentile(finite_confidence, [2, 98])
-    if vmax <= vmin:
-        vmax = vmin + 1e-12
+    if image.dtype == np.uint8:
+        return image.astype(np.float32) / 255.0
 
-    figure, axis = plt.subplots(figsize=(8, 6))
-    displayed = axis.imshow(
-        np.flipud(np.fliplr(np.ma.masked_invalid(confidence))),
-        cmap="gray_r",  # 높은 confidence를 검정색으로 표시
-        vmin=vmin,
-        vmax=vmax,
+    return image.astype(np.float32)
+
+
+def display_comparison(
+    dataset,
+    our_img0,
+    our_img1,
+    our_aligned,
+    our_depth,
+    our_S,
+    depth_range=(0.4, 1.0),
+    derivative_limit=None,
+    confidence_threshold=None,
+    rotate180=True,
+    save_path=None,
+):
+    """
+    Top: author-provided arrays.
+    Bottom: our inputs and computed outputs.
+
+    confidence_threshold=None:
+        Compare full-frame depth before confidence filtering.
+    confidence_threshold=1e-5:
+        Apply each row's S**2 mask to its depth, for display only.
+    """
+    author_depth = np.asarray(dataset[3], dtype=np.float32)
+    author_S = np.asarray(dataset[4], dtype=np.float32)
+    our_depth = np.asarray(our_depth, dtype=np.float32)
+    our_S = np.asarray(our_S, dtype=np.float32)
+
+    pairs = [
+        (to_float01(dataset[0]), to_float01(our_img0)),
+        (to_float01(dataset[1]), to_float01(our_img1)),
+        (to_float01(dataset[2]), to_float01(our_aligned)),
+        (author_depth, our_depth),
+        (author_S, our_S),
+    ]
+
+    titles = [
+        "Image 1",
+        "Image 2",
+        "Aligned Image 2",
+        "Predicted depth",
+        "Signed derivative S",
+    ]
+
+    for title, (author, ours) in zip(titles, pairs):
+        if author.shape != ours.shape:
+            raise ValueError(
+                f"{title}: shape mismatch "
+                f"{author.shape} vs {ours.shape}"
+            )
+
+    # One shared, symmetric range for both signed derivative maps.
+    if derivative_limit is None:
+        finite_values = np.concatenate([
+            np.abs(author_S[np.isfinite(author_S)]),
+            np.abs(our_S[np.isfinite(our_S)]),
+        ])
+        if finite_values.size == 0:
+            raise ValueError("No finite derivative values")
+
+        derivative_limit = max(float(finite_values.max()), 1e-8)
+
+    if derivative_limit <= 0:
+        raise ValueError("derivative_limit must be positive")
+
+    depth_cmap = plt.get_cmap("jet").copy()
+    depth_cmap.set_bad("white")
+    depth_cmap.set_under("magenta")
+    depth_cmap.set_over("black")
+
+    derivative_cmap = plt.get_cmap("RdBu_r").copy()
+    derivative_cmap.set_bad("lightgray")
+
+    fig, axes = plt.subplots(
+        2, 5,
+        figsize=(23, 9),
+        constrained_layout=True,
     )
-    axis.set_title("Confidence map (S²)")
-    axis.axis("off")
-    figure.colorbar(displayed, ax=axis, label="Confidence (display range)")
-    plt.tight_layout()
+
+    depth_artist = None
+    derivative_artist = None
+
+    for col, (author, ours) in enumerate(pairs):
+        for row, array in enumerate((author, ours)):
+            ax = axes[row, col]
+            displayed = np.array(array, copy=True)
+
+            if col == 3:
+                mask = ~np.isfinite(displayed)
+
+                if confidence_threshold is not None:
+                    S = author_S if row == 0 else our_S
+                    mask |= (
+                        ~np.isfinite(S)
+                        | (S**2 <= confidence_threshold)
+                    )
+
+                displayed = np.ma.array(displayed, mask=mask)
+
+            elif col == 4:
+                displayed = np.ma.masked_invalid(displayed)
+
+            if rotate180:
+                displayed = np.rot90(displayed, 2)
+
+            if col < 3:
+                # RGB images already share the [0, 1] display scale.
+                ax.imshow(
+                    np.clip(displayed, 0, 1),
+                    interpolation="nearest",
+                )
+
+            elif col == 3:
+                depth_artist = ax.imshow(
+                    displayed,
+                    cmap=depth_cmap,
+                    vmin=depth_range[0],
+                    vmax=depth_range[1],
+                    interpolation="nearest",
+                )
+
+            else:
+                derivative_artist = ax.imshow(
+                    displayed,
+                    cmap=derivative_cmap,
+                    vmin=-derivative_limit,
+                    vmax=derivative_limit,
+                    interpolation="nearest",
+                )
+
+            prefix = "Author" if row == 0 else "Ours"
+            ax.set_title(f"{prefix}: {titles[col]}")
+            ax.axis("off")
+
+    fig.colorbar(
+        depth_artist,
+        ax=axes[:, 3].tolist(),
+        label="Depth (m)",
+        extend="both",
+        shrink=0.8,
+    )
+    fig.colorbar(
+        derivative_artist,
+        ax=axes[:, 4].tolist(),
+        label="Signed derivative S (not confidence)",
+        extend="both",
+        shrink=0.8,
+    )
+
+    mode = (
+        "Before confidence filtering"
+        if confidence_threshold is None
+        else f"Depth masked where S² ≤ {confidence_threshold:g}"
+    )
+    fig.suptitle(
+        f"Focal Split comparison — {mode}",
+        fontsize=16,
+    )
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=180, bbox_inches="tight")
+
     plt.show()
+    return fig
 
 def main():
     pkl_path = 'CVPR.pkl'  
-    gray1, gray2 = convert_to_grayscale(pkl_path)
-    filtered1 = aberration_correction(gray1)
-    filtered2 = aberration_correction(gray2)
-    denoised1 = noise_attenuation(filtered1)
-    denoised2 = noise_attenuation(filtered2)
-    sift_image1, sift_image2 = prepare_sift_images(denoised1, denoised2)
-    Homography = descriptor_matching_Homography(sift_image1, sift_image2)
-    warped_image = warp_image(denoised2, Homography)
-    I_s_approx, laplacian_I_approx = compute_derivatives(warped_image, denoised1)
-    depth = depth_estimation(
-        I_s_approx,
-        laplacian_I_approx,
-        5.263,
-        6.474,
-        patch_size=21,
-        confidence_threshold=0,#4e-5
-    )
-    print(f"Valid depth pixels: {np.isfinite(depth).mean():.1%}")
-    ''''''
     with open(pkl_path, "rb") as f:
         dataset = pickle.load(f)
 
-    cvpr_aligned = dataset[2]
-    our_aligned_rgb = cv2.warpPerspective(
-        dataset[1],
-        Homography,
-        (gray1.shape[1], gray1.shape[0]),
+    image1 = to_float01(dataset[0])
+    image2 = to_float01(dataset[1])
+
+    sift_image1, sift_image2 = prepare_sift_images(image1, image2)
+
+    Homography = descriptor_matching_Homography(sift_image1, sift_image2)
+    warped_image = warp_image(image2, Homography)
+
+    green1, green2 = convert_to_green(image1, warped_image)
+    filtered1 = aberration_correction(green1)
+    filtered2 = aberration_correction(green2)
+
+    denoised1 = noise_attenuation(filtered1)
+    denoised2 = noise_attenuation(filtered2)
+
+    I_s_approx, laplacian_I_approx = compute_derivatives(denoised2, denoised1)
+    depth = depth_estimation(
+        I_s_approx,
+        laplacian_I_approx,
+        A=1.23,
+        B=0.19,
+        patch_size=21
+    )
+    print(f"Valid depth pixels: {np.isfinite(depth).mean():.1%}")
+    ''''''
+
+    display_comparison(
+        dataset=dataset,
+        our_img0=image1,
+        our_img1=image2,
+        our_aligned=warped_image,
+        our_depth=depth,
+        our_S=I_s_approx,
+        confidence_threshold=None,
+        rotate180=True,
+        save_path=(
+            "comparison_all.png"
+        ),
     )
 
-    def prepare_rgb_for_display(image):
-        image = np.asarray(image)
-        if image.dtype != np.uint8 and np.nanmax(image) > 1.0:
-            image = image.astype(np.float32) / 255.0
-        return np.clip(image, 0.0, 1.0) if image.dtype != np.uint8 else image
 
-    residual_limit = np.percentile(np.abs(warped_image), 99)
-    residual_limit = max(float(residual_limit), 1e-8)
-
-    figure, axes = plt.subplots(1, 3, figsize=(18, 6))
-
-    axes[0].imshow(prepare_rgb_for_display(cvpr_aligned))
-    axes[0].set_title("Dataset aligned image (data[2])")
-
-    axes[1].imshow(prepare_rgb_for_display(our_aligned_rgb))
-    axes[1].set_title("Our Homography on original image2")
-
-    axes[2].imshow(
-        warped_image,
-        cmap="gray",
-        vmin=-residual_limit,
-        vmax=residual_limit,
-    )
-    axes[2].set_title("Our warped denoised image (used for depth)")
-
-    for axis in axes:
-        axis.axis("off")
-
-    plt.tight_layout()
-    plt.show()
-
-    reference_depth = np.asarray(dataset[3], dtype=np.float32)
-    reference_confidence = np.asarray(dataset[4], dtype=np.float32)
-    estimated_confidence = np.asarray(I_s_approx, dtype=np.float32) ** 2
-
-    if reference_depth.shape != depth.shape:
-        raise ValueError(
-            f"Depth shape mismatch: reference {reference_depth.shape}, "
-            f"estimated {depth.shape}"
-        )
-
-    if reference_confidence.shape != estimated_confidence.shape:
-        raise ValueError(
-            f"Confidence shape mismatch: reference {reference_confidence.shape}, "
-            f"estimated {estimated_confidence.shape}"
-        )
-
-    # 두 map 모두 현재 depth 표시와 같은 180도 방향으로 맞춤
-    reference_depth = np.flipud(np.fliplr(reference_depth))
-    estimated_depth = np.flipud(np.fliplr(depth))
-    reference_confidence = np.flipud(np.fliplr(reference_confidence))
-    estimated_confidence = np.flipud(np.fliplr(estimated_confidence))
-
-    # Depth 비교: 동일한 색상 범위를 사용
-    finite_depths = np.concatenate(
-        (
-            reference_depth[np.isfinite(reference_depth)],
-            estimated_depth[np.isfinite(estimated_depth)],
-        )
-    )
-    if finite_depths.size == 0:
-        raise ValueError("No finite depth values available for comparison")
-
-    depth_min, depth_max = np.percentile(finite_depths, [2, 98])
-    if depth_max <= depth_min:
-        depth_max = depth_min + 1e-8
-
-    figure, axes = plt.subplots(1, 2, figsize=(14, 6))
-    for axis, depth_map, title in zip(
-        axes,
-        (reference_depth, estimated_depth),
-        ("CVPR reference depth", "My estimated depth"),
-    ):
-        image = axis.imshow(
-            np.ma.masked_invalid(depth_map),
-            cmap="rainbow",
-            vmin=depth_min,
-            vmax=depth_max,
-        )
-        axis.set_title(title)
-        axis.axis("off")
-
-    figure.colorbar(image, ax=axes, label="Depth")
-    plt.tight_layout()
-    plt.show()
-
-    # Confidence 비교: 각 map의 값 범위가 다를 수 있어 패널별로 정규화
-    figure, axes = plt.subplots(1, 2, figsize=(14, 6))
-    for axis, confidence_map, title in zip(
-        axes,
-        (reference_confidence, estimated_confidence),
-        ("CVPR reference confidence", "My confidence (S²)"),
-    ):
-        finite_confidence = confidence_map[np.isfinite(confidence_map)]
-        if finite_confidence.size == 0:
-            raise ValueError(f"{title} contains no finite values")
-
-        conf_min, conf_max = np.percentile(finite_confidence, [2, 98])
-        if conf_max <= conf_min:
-            conf_max = conf_min + 1e-12
-
-        image = axis.imshow(
-            np.ma.masked_invalid(confidence_map),
-            cmap="gray_r",
-            vmin=conf_min,
-            vmax=conf_max,
-        )
-        axis.set_title(title)
-        axis.axis("off")
-        figure.colorbar(image, ax=axis, label="Confidence (display range)")
-
-    plt.tight_layout()
-    plt.show()
-
-
-    display_depth(depth)
-    display_confidence(I_s_approx)
 if __name__ == "__main__":
     main()
