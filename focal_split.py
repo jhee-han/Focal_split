@@ -115,58 +115,6 @@ def depth_estimation(
     depth = VW/WW
     return depth
 
-# Display two images
-def display_images(image1, image2):
-    
-    cv2.imshow('Image 1', image1)
-    cv2.imshow('Image 2', image2)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows() 
-
-# 99th percentile normalization and display residual images(How to visualize the images are different)
-def display_residual_images(image1, image2):
-    scale = np.percentile(
-        np.abs(np.concatenate((image1.ravel(), image2.ravel()))),
-        99,
-    )
-    scale = max(scale, 1e-8)
-
-    display1 = np.clip(0.5 + image1 / (2 * scale), 0, 1)
-    display2 = np.clip(0.5 + image2 / (2 * scale), 0, 1)
-    display1 = (display1 * 255).astype(np.uint8)
-    display2 = (display2 * 255).astype(np.uint8)
-
-    cv2.imshow('Image 1 - residual', display1)
-    cv2.imshow('Image 2 - residual', display2)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
-def display_depth(depth):
-    valid_depth = depth[np.isfinite(depth)]
-    if valid_depth.size == 0:
-        raise ValueError("Depth map contains no finite values to display")
-
-    # min_depth, max_depth = np.percentile(valid_depth, [2, 98])
-    # if min_depth == max_depth:
-    #     max_depth = min_depth + 1e-8
-    min_depth, max_depth = 0.4, 1.0
-
-    depth_image = np.ma.masked_invalid(depth)
-    figure, axis = plt.subplots(figsize=(8, 6))
-    displayed = axis.imshow(
-        np.flipud(np.fliplr(depth_image)),
-        cmap="rainbow",
-        vmin=min_depth,
-        vmax=max_depth,
-    )
-    axis.set_title("Estimated depth")
-    axis.axis("off")
-    figure.colorbar(displayed, ax=axis, label="Depth value (display range)")
-    plt.tight_layout()
-    plt.show()
-
-
 def to_float01(image):
     image = np.asarray(image)
 
