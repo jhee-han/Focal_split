@@ -23,7 +23,7 @@ def aberration_correction(green_image, kernel_size=21):
         green_image = green_image.astype(np.float32)
 
     kernel = np.ones((kernel_size, kernel_size), np.float32) / (kernel_size ** 2) #1/21*21
-    convolutioned_img = cv2.filter2D(green_image, -1, kernel)
+    convolutioned_img = cv2.filter2D(green_image, -1, kernel, borderType=cv2.BORDER_CONSTANT)
     filtered_out_background = green_image - convolutioned_img
     return filtered_out_background
 
@@ -56,7 +56,7 @@ def sift_feature_extraction(image):
     return keypoints, descriptors
 
 #6 Descriptor matching and Homography estimation; apply RANSAC algorithm
-def descriptor_matching_Homography(image1, image2, ratio=0.75):
+def descriptor_matching_Homography(image1, image2, ratio=0.8):
     keypoints1, descriptors1 = sift_feature_extraction(image1)
     keypoints2, descriptors2 = sift_feature_extraction(image2)
     bf = cv2.BFMatcher()
@@ -341,7 +341,7 @@ def display_comparison(
     return fig
 
 def main():
-    pkl_path = 'CVPR.pkl'  
+    pkl_path = 'keyboard.pkl'  
     with open(pkl_path, "rb") as f:
         dataset = pickle.load(f)
 
@@ -354,6 +354,7 @@ def main():
     warped_image = warp_image(image2, Homography)
 
     green1, green2 = convert_to_green(image1, warped_image)
+    # green1, green2 = convert_to_green(image1, dataset[2])  # Use the aligned image from the dataset
     filtered1 = aberration_correction(green1)
     filtered2 = aberration_correction(green2)
 
@@ -378,10 +379,10 @@ def main():
         our_aligned=warped_image,
         our_depth=depth,
         our_S=I_s_approx,
-        confidence_threshold=None,
+        confidence_threshold=1e-5,
         rotate180=True,
         save_path=(
-            "comparison_all.png"
+            "keyboard_comparison_all_confidence_threshold.png"
         ),
     )
 
