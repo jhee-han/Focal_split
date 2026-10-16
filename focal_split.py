@@ -37,7 +37,7 @@ def prepare_sift_images(image1, image2):
     image1 = to_float01(image1)
     image2 = to_float01(image2)
 
-    # RGB 입력이면 특징점 추출용 grayscale로 변환
+    # RGB input -> transform to grayscale
     if image1.ndim == 3:
         image1 = cv2.cvtColor(image1, cv2.COLOR_RGB2GRAY)
 
@@ -138,6 +138,7 @@ def display_comparison(
     save_path=None,
 ):
     """
+    AI generated function
     Top: author-provided arrays.
     Bottom: our inputs and computed outputs.
 
@@ -317,7 +318,7 @@ def main():
         B=0.19,
         patch_size=21
     )
-    print(f"Valid depth pixels: {np.isfinite(depth).mean():.1%}")
+    # print(f"Valid depth pixels: {np.isfinite(depth).mean():.1%}")
     ''''''
 
     display_comparison(
@@ -330,7 +331,7 @@ def main():
         confidence_threshold=1e-5,
         rotate180=True,
         save_path=(
-            "keyboard_comparison_all_confidence_threshold.png"
+            "comparison_all.png"
         ),
     )
 
